@@ -47,51 +47,42 @@ int main(int argc, char *argv[]) {
     // lies in the zeroth index. And since we know that C
     // guarantees a NULL terminator, we can use that to find the end
     for (int i = 1; i < argc; i++) {
-        if (argv[i] == NULL) {
-            continue; // Just exit out the for loop since we found the NULL
-        } else {
-            int fd = open(argv[i], O_RDONLY); // Attempt the file opening
+        int fd = open(argv[i], O_RDONLY); // Attempt the file opening
 
-            // If there is an error:
-            if (fd == -1) {
-                errors[i] = errno; // Store the errno in the correct index
-                errcnt++; // incrememnt error counter
+        // If there is an error:
+        if (fd == -1) {
+            errors[i] = errno; // Store the errno in the correct index
+            errcnt++; // incrememnt error counter
                 continue; // And move on, we will print these out later
+        }
+
+        // setup the storage buffer for the characters read
+        char buffer[buffsize];
+        // ensure we have a default for the amount of lines read, can change later
+        ssize_t lnread = 4096;
+
+        // while we are still pulling characters out
+        while (lnread > 0) {
+            lnread = read(fd, buffer, buffsize); // store the lines read and output to buffer
+
+            // Now ensure we dont accidentally get a -1 from read(), which is unsigned so becomes max size buffer
+            if (lnread == -1) {
+                break;
             }
+            write(1, buffer, lnread); // write buffer contents to STDOUT
+        }
 
-            // setup the storage buffer for the characters read
-            char buffer[buffsize];
-            // ensure we have a default for the amount of lines read, can change later
-            ssize_t lnread = 4096;
-
-            // while we are still pulling characters out
-            while (lnread > 0) {
-                lnread = read(fd, buffer, buffsize); // store the lines read and output to buffer
-
-                // Now ensure we dont accidentally get a -1 from read(), which is unsigned so becomes max size buffer
-                if (lnread == -1) {
-                    break;
-                }
-                write(1, buffer, lnread); // write buffer contents to STDOUT
-            }
-
-            // When we reach lnread <= 0:
-            if (lnread == 0) {
-                errors[i] = 0; // not an error
-                close(fd); // We close if the NULL terminator is found
-                continue;
-            } else if (lnread == -1) {
-                // we have reached an error
-                errors[i] = errno; // store the error
-                errcnt++; // increment error counter
-                close(fd); // close the file
-                continue; // move on
-            } else {
-                // an undefined error was caught, generate a "unknown error" message
-                msg = "cat: Error: unknown read() error!\n";
-                write(2, msg, strlen(msg));
-                errcnt++; // incrememnt error counter
-            }
+        // When we reach lnread <= 0:
+        if (lnread == 0) {
+            errors[i] = 0; // not an error
+            close(fd); // We close if the NULL terminator is found
+            continue;
+        } else if (lnread == -1) {
+            // we have reached an error
+            errors[i] = errno; // store the error
+            errcnt++; // increment error counter
+            close(fd); // close the file
+            continue; // move on
         }
     }
 
