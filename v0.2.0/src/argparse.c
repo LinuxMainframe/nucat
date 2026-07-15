@@ -245,7 +245,7 @@ int parse_brackets(const char *token, int list[]) {
 
         list[count] = (int)val;
         count++;
-        seg_start = seg_end + 1;
+        seg_start = (seg_end + 1 < inner_len) ? seg_end + 1 : inner_len;
     }
 
     return count;
