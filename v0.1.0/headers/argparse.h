@@ -11,7 +11,8 @@ typedef enum {
     FLAG_HELP,
     FLAG_VERBOSE,
     FLAG_LINE_NUMBERS,
-    FLAG_REVEAL_HIDDEN
+    FLAG_REVEAL_HIDDEN,
+    FLAG_LINE_SEEK
 } FlagId;
 
 // Flags can behave differently: some are simple toggles, others require an argument string
@@ -32,6 +33,7 @@ typedef struct {
     int verbose_enabled;
     int line_numbering;
     int reveal_hidden;
+    char *seek_number;
 } AppConfig;
 
 // Public function blueprints
