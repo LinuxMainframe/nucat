@@ -20,7 +20,8 @@ typedef enum {
     FLAG_HELP,
     FLAG_VERBOSE,
     FLAG_LINE_NUMBERS,
-    FLAG_LINE_SEEK
+    FLAG_LINE_SEEK,
+    FLAG_STRICT
 } FlagId;
 
 // What shape of trailing value (if any) a flag expects

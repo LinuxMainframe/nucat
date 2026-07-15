@@ -15,7 +15,9 @@ static const FlagDefinition flag_table[] = {
     {"-v",        FLAG_VERBOSE,      TYPE_TOGGLE},
     {"--verbose", FLAG_VERBOSE,      TYPE_TOGGLE},
     {"-n",        FLAG_LINE_NUMBERS, TYPE_TOGGLE},
-    {"-s",        FLAG_LINE_SEEK,    TYPE_INT}
+    {"-s",        FLAG_LINE_SEEK,    TYPE_INT},
+    {"-strict",   FLAG_STRICT,       TYPE_TOGGLE},
+    {"-x",        FLAG_STRICT,       TYPE_TOGGLE}
 };
 
 #define FLAG_TABLE_SIZE (sizeof(flag_table) / sizeof(flag_table[0]))
@@ -174,7 +176,8 @@ int flag_validate(char *argv[], int flag_index, int boundary_index,
         return -1;
     }
 
-    bool tool_wide = (flag->id == FLAG_HELP || flag->id == FLAG_VERBOSE);
+    bool tool_wide = (flag->id == FLAG_HELP || flag->id == FLAG_VERBOSE
+                       || flag->id == FLAG_STRICT);
 
     // Was a bracket actually present in this occurrence? For toggles,
     // consumed==1 means "bracket found". Value-flags always require a
@@ -345,6 +348,21 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
     log->count = 0;
     *num_fileconfs = 0;
 
+    // --- Prescan: does -strict or -x appear anywhere in argv? ---
+    // This runs before Step 1 specifically so that strict mode is already
+    // active if Step 1's own terminal-flag validation hits an error —
+    // otherwise "-strict" placed after the flag that errors would arrive
+    // too late to take effect, and position would matter after all.
+    // Step 3 still processes -strict/-x normally afterward (shape and
+    // tool-wide-bracket validated like any other flag); this prescan only
+    // exists to get the *timing* right, not to replace real validation.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-strict") == 0 || strcmp(argv[i], "-x") == 0) {
+            config->strict = true;
+            break;
+        }
+    }
+
     // --- Step 1: locate and validate the terminal flag ---
     int positionlist[argc];
     int entries;
@@ -440,6 +458,10 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
         }
         if (flag->id == FLAG_VERBOSE) {
             config->verbose_mode = true;
+            continue;
+        }
+        if (flag->id == FLAG_STRICT) {
+            config->strict = true; // already set by the prescan in most cases; idempotent
             continue;
         }
 
