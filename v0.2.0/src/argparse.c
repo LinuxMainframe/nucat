@@ -142,6 +142,17 @@ int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
         if (argv[flag_index + 1][0] == '[') {
             return -1; // bracket found where the value should be
         }
+
+        // The token must actually PARSE as a valid comma-separated integer
+        // list, not just "not literally a bracket" — otherwise, with the
+        // bracket now optional, a non-numeric token (e.g. the next file's
+        // name, if the value was omitted entirely: "-s file.txt") would be
+        // silently swallowed as the value, corrupting file_offset.
+        int scratch[MAX_TOKEN_LEN];
+        if (parse_brackets(argv[flag_index + 1], scratch) == -1) {
+            return -1;
+        }
+
         if (flag_index + 2 < boundary_index && argv[flag_index + 2][0] == '[') {
             consumed = 2; // value + bracket
         } else {
@@ -245,7 +256,7 @@ int parse_brackets(const char *token, int list[]) {
 
         list[count] = (int)val;
         count++;
-        seg_start = (seg_end + 1 < inner_len) ? seg_end + 1 : inner_len;
+        seg_start = seg_end + 1;
     }
 
     return count;
@@ -508,14 +519,26 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
 
         // Rule: multiple values may target one file, OR one value may
         // target multiple files — never both in the same occurrence.
+        // Mark every intended target invalid rather than leaving them
+        // untouched: an untouched FileConfig would silently fall back to
+        // plain cat, which looks like success when the requested seek
+        // never actually happened.
         if (value_count > 1 && target_count > 1) {
             report_error(log, config, ERR_CONFLICTING_TARGETS, flag_index, argv[flag_index]);
+            for (int i = 0; i < target_count; i++) {
+                if (targetlist[i] >= 1 && targetlist[i] <= num_files) {
+                    fileconfs[targetlist[i] - 1].invalid = true;
+                }
+            }
             continue;
         }
 
         // Range-check every target against the actual file count before
         // mutating anything — parse_brackets has no notion of num_files,
-        // so this is the first point that check can happen.
+        // so this is the first point that check can happen. Same
+        // reasoning as above: mark whichever targets in this occurrence
+        // WERE valid indices as invalid too, since the flag couldn't be
+        // safely/fully applied as written.
         bool range_ok = true;
         for (int i = 0; i < target_count; i++) {
             if (targetlist[i] < 1 || targetlist[i] > num_files) {
@@ -525,12 +548,18 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
             }
         }
         if (!range_ok) {
+            for (int i = 0; i < target_count; i++) {
+                if (targetlist[i] >= 1 && targetlist[i] <= num_files) {
+                    fileconfs[targetlist[i] - 1].invalid = true;
+                }
+            }
             continue;
         }
 
         for (int i = 0; i < target_count; i++) {
             if (fileconf_mutate(fileconfs, targetlist[i], flag, valuelist, value_count) == -1) {
                 report_error(log, config, ERR_SEEK_LIMIT, flag_index, argv[flag_index]);
+                fileconfs[targetlist[i] - 1].invalid = true; // this target only
             }
         }
     }
