@@ -54,6 +54,7 @@ typedef struct {
     int  seek_count;
     int  file_no;          // 1-indexed position among the files, per bracket refs
     const char *path;      // alias into argv — argv strings outlive main(), so no copy needed
+    bool invalid;           // set by flag_conflict_check; main() must skip reading this file
 } FileConfig;
 
 // - ERROR HANDLING - //
@@ -65,7 +66,14 @@ typedef enum {
     ERR_EXTRA_TOKENS,
     ERR_INVALID_TARGET,
     ERR_FILE_OPEN,
-    ERR_FLAG_CONFLICT
+    ERR_FLAG_CONFLICT,
+    ERR_INVALID_VALUE,       // value token wasn't a clean comma-separated int list
+    ERR_CONFLICTING_TARGETS, // multiple values AND multiple targets in one occurrence
+    ERR_SEEK_LIMIT,           // a file's seek[] array is already full (MAX_SEEKS)
+    ERR_TOOLWIDE_BRACKET,     // a tool-wide flag (-h/-v) was given a bracket
+    ERR_INVALID_SEEK_VALUE,  // a seek line number was <= 0
+    ERR_DUPLICATE_SEEK,      // the same line number appears twice for one file
+    ERR_FILE_READ             // read() failed partway through a file
 } ErrorType;
 
 typedef struct {
@@ -93,7 +101,8 @@ int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
 // Wraps validate_flag_shape with a semantic check: tool-wide flags
 // (FLAG_HELP, FLAG_VERBOSE) cannot carry a bracket, since they don't
 // target files. Writes the token-count consumed into *consumed_out on
-// success. Returns 0 on success, -1 on any failure (shape or semantic).
+// success. Returns 0 on success, -1 on a shape failure, -2 specifically
+// when a tool-wide flag has a bracket it shouldn't.
 int flag_validate(char *argv[], int flag_index, int boundary_index,
                    const FlagDefinition *flag, bool enforce_exact_boundary,
                    int *consumed_out);
@@ -124,5 +133,13 @@ void print_error_log(const ErrorLog *log);
 int argument_parse(int argc, char *argv[], AppConfig *config,
                     FileConfig fileconfs[], int *num_fileconfs,
                     ErrorLog *log);
+
+// Value-sanity check over every prepared FileConfig: rejects non-positive
+// seek line numbers (a file has no "line 0") and duplicate seek targets
+// within the same file (e.g. "-s 13,13 [1]"). Reports each violation via
+// report_error rather than returning early, so every file gets checked.
+// Returns 0 if no violations were found, -1 if at least one was reported.
+int flag_conflict_check(FileConfig fileconfs[], int num_fileconfs,
+                         ErrorLog *log, const AppConfig *config);
 
 #endif // ARGPARSE_H

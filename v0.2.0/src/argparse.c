@@ -24,13 +24,20 @@ static const FlagDefinition flag_table[] = {
 // Designated initializers keep these tied to the enum name, not position,
 // so reordering ErrorType later can't silently desync the messages.
 static const char *error_messages[] = {
-    [ERR_UNKNOWN_FLAG]    = "unrecognized flag",
-    [ERR_MISSING_VALUE]   = "flag requires a value",
-    [ERR_MISSING_BRACKET] = "flag requires a bracketed target list",
-    [ERR_EXTRA_TOKENS]    = "unexpected extra tokens after flag",
-    [ERR_INVALID_TARGET]  = "bracket references a file index that doesn't exist",
-    [ERR_FILE_OPEN]       = "could not open file",
-    [ERR_FLAG_CONFLICT]   = "conflicting flags on the same file",
+    [ERR_UNKNOWN_FLAG]         = "unrecognized flag",
+    [ERR_MISSING_VALUE]        = "flag requires a value",
+    [ERR_MISSING_BRACKET]      = "flag requires a bracketed target list",
+    [ERR_EXTRA_TOKENS]         = "unexpected extra tokens after flag",
+    [ERR_INVALID_TARGET]       = "bracket references a file index that doesn't exist",
+    [ERR_FILE_OPEN]            = "could not open file",
+    [ERR_FLAG_CONFLICT]        = "conflicting flags on the same file",
+    [ERR_INVALID_VALUE]        = "value is not a valid comma-separated list of integers",
+    [ERR_CONFLICTING_TARGETS]  = "cannot combine multiple values with multiple target files",
+    [ERR_SEEK_LIMIT]           = "too many seek targets for this file",
+    [ERR_TOOLWIDE_BRACKET]     = "this flag applies tool-wide and cannot take a bracketed target list",
+    [ERR_INVALID_SEEK_VALUE]   = "seek line numbers must be 1 or greater",
+    [ERR_DUPLICATE_SEEK]       = "the same line number was specified more than once for this file",
+    [ERR_FILE_READ]            = "error reading file",
 };
 
 // Looks up a flag definition by its literal text (e.g. "-n", "--help").
@@ -138,9 +145,11 @@ int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
 
     // For non-terminal flags, anything left over between what was consumed
     // and the next flag is unaccounted-for input — e.g. "-s 13 [1] extra_junk -v".
-    // For the terminal flag, boundary_index is argc (includes files), so
-    // this check does not apply.
-    if (enforce_exact_boundary && (flag_index + consumed != boundary_index)) {
+    // flag_index + consumed is the LAST token this occurrence uses, so the
+    // next free slot is flag_index + consumed + 1, which must equal
+    // boundary_index for a clean fit. For the terminal flag, boundary_index
+    // is argc (includes files), so this check does not apply.
+    if (enforce_exact_boundary && (flag_index + consumed + 1 != boundary_index)) {
         return -1;
     }
 
@@ -151,6 +160,11 @@ int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
 // can't tell you whether a bracket makes sense for this flag's PURPOSE.
 // FLAG_HELP/FLAG_VERBOSE are tool-wide (AppConfig-level) and never target
 // files, so a bracket on either is meaningless even if it's shaped fine.
+//
+// Returns 0 on success. Returns -1 on a shape failure (bad tokens).
+// Returns -2 specifically when a tool-wide flag carries a bracket it
+// shouldn't have — kept distinct from -1 so callers can report an
+// accurate message instead of a generic "malformed" one.
 int flag_validate(char *argv[], int flag_index, int boundary_index,
                    const FlagDefinition *flag, bool enforce_exact_boundary,
                    int *consumed_out) {
@@ -169,7 +183,7 @@ int flag_validate(char *argv[], int flag_index, int boundary_index,
     bool bracket_present = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : true;
 
     if (tool_wide && bracket_present) {
-        return -1; // e.g. "-v [1,2]" — a global flag can't target files
+        return -2; // e.g. "-v [1,2]" — a global flag can't target files
     }
 
     *consumed_out = consumed;
@@ -316,9 +330,11 @@ void print_error_log(const ErrorLog *log) {
 // Full two-pass argument parser. Populates *config, fills fileconfs[] (up
 // to *num_fileconfs entries), and records any errors into *log.
 //
-// TODO: Step 3 — walk every flag (non-terminal, then terminal), parse
-// bracket contents with find_commas + strtol, and mutate the matching
-// fileconfs[] entries by file_no. Not yet designed at the code level.
+// Step 1: locates and validates the terminal flag, computes file_offset.
+// Step 2: prepopulates fileconfs[] with one default entry per file.
+// Step 3: walks every flag (non-terminal via positionlist[], then the
+//         terminal flag), validates it, parses its value/bracket content,
+//         and mutates the targeted fileconfs[] entries accordingly.
 int argument_parse(int argc, char *argv[], AppConfig *config,
                     FileConfig fileconfs[], int *num_fileconfs,
                     ErrorLog *log) {
@@ -367,11 +383,168 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
         fileconfs[i].path = argv[file_offset + i];
         fileconfs[i].line_numbering = false;
         fileconfs[i].seek_count = 0;
+        fileconfs[i].invalid = false;
     }
     *num_fileconfs = num_files;
 
     // --- Step 3: walk every flag, parse bracket contents, mutate fileconfs[] ---
-    // TODO: not yet designed at the code level — see comment above.
+    // idx runs 0..entries inclusive: 0..entries-1 are the non-terminal flags
+    // (positions from positionlist[]), and idx==entries is the terminal flag
+    // (already shape-validated in Step 1, but re-run through flag_validate
+    // here too for the semantic tool-wide/bracket check, which Step 1 never
+    // performed).
+    for (int idx = 0; idx <= entries; idx++) {
+        int flag_index;
+        int boundary_index;
+        bool exact;
+
+        if (idx < entries) {
+            flag_index = positionlist[idx];
+            boundary_index = (idx + 1 < entries) ? positionlist[idx + 1] : last_flag;
+            exact = true;
+        } else {
+            if (last_flag == 0) {
+                break; // no terminal flag exists — nothing left to process
+            }
+            flag_index = last_flag;
+            boundary_index = argc;
+            exact = false;
+        }
+
+        const FlagDefinition *flag = find_flag(argv[flag_index]);
+        if (flag == NULL) {
+            // find_flag_positions only checks for a leading '-', it never
+            // validates the flag is real — this is the first point a
+            // non-terminal flag's name actually gets checked.
+            report_error(log, config, ERR_UNKNOWN_FLAG, flag_index, argv[flag_index]);
+            continue;
+        }
+
+        int consumed;
+        int flag_rc = flag_validate(argv, flag_index, boundary_index, flag, exact, &consumed);
+        if (flag_rc == -2) {
+            report_error(log, config, ERR_TOOLWIDE_BRACKET, flag_index, argv[flag_index]);
+            continue;
+        }
+        if (flag_rc == -1) {
+            report_error(log, config, ERR_MISSING_BRACKET, flag_index, argv[flag_index]);
+            continue;
+        }
+
+        // Tool-wide flags just set AppConfig — flag_validate already
+        // guarantees no bracket was present for these, so there's no
+        // file-targeting work to do.
+        if (flag->id == FLAG_HELP) {
+            config->help_requested = true;
+            continue;
+        }
+        if (flag->id == FLAG_VERBOSE) {
+            config->verbose_mode = true;
+            continue;
+        }
+
+        // From here on, this is a per-file flag (FLAG_LINE_NUMBERS or
+        // FLAG_LINE_SEEK) — figure out which files it targets.
+        bool has_bracket = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : true;
+
+        int targetlist[MAX_TOKEN_LEN];
+        int target_count;
+
+        if (has_bracket) {
+            const char *bracket_token = (flag->type == TYPE_TOGGLE)
+                                             ? argv[flag_index + 1]
+                                             : argv[flag_index + 2];
+            target_count = parse_brackets(bracket_token, targetlist);
+            if (target_count == -1) {
+                report_error(log, config, ERR_INVALID_TARGET, flag_index, bracket_token);
+                continue;
+            }
+        } else {
+            // No bracket on a toggle — applies to every file.
+            target_count = num_files;
+            for (int i = 0; i < num_files; i++) {
+                targetlist[i] = i + 1;
+            }
+        }
+
+        // Parse the value list, if this flag type carries one.
+        int valuelist[MAX_TOKEN_LEN];
+        int value_count = 0;
+
+        if (flag->type != TYPE_TOGGLE) {
+            const char *value_token = argv[flag_index + 1];
+            value_count = parse_brackets(value_token, valuelist);
+            if (value_count == -1) {
+                report_error(log, config, ERR_INVALID_VALUE, flag_index, value_token);
+                continue;
+            }
+        }
+
+        // Rule: multiple values may target one file, OR one value may
+        // target multiple files — never both in the same occurrence.
+        if (value_count > 1 && target_count > 1) {
+            report_error(log, config, ERR_CONFLICTING_TARGETS, flag_index, argv[flag_index]);
+            continue;
+        }
+
+        // Range-check every target against the actual file count before
+        // mutating anything — parse_brackets has no notion of num_files,
+        // so this is the first point that check can happen.
+        bool range_ok = true;
+        for (int i = 0; i < target_count; i++) {
+            if (targetlist[i] < 1 || targetlist[i] > num_files) {
+                report_error(log, config, ERR_INVALID_TARGET, flag_index, argv[flag_index]);
+                range_ok = false;
+                break;
+            }
+        }
+        if (!range_ok) {
+            continue;
+        }
+
+        for (int i = 0; i < target_count; i++) {
+            if (fileconf_mutate(fileconfs, targetlist[i], flag, valuelist, value_count) == -1) {
+                report_error(log, config, ERR_SEEK_LIMIT, flag_index, argv[flag_index]);
+            }
+        }
+    }
 
     return 0;
+}
+
+// Value-sanity check over every prepared FileConfig. Checks each file's
+// seek[] independently: every value must be >= 1 (there is no line 0),
+// and no value may repeat within the same file's list. On any violation,
+// that specific file is marked invalid (fc->invalid = true) so main()
+// can skip reading it while still processing every other file normally —
+// one bad file's config should not block correct output from the rest.
+// (In strict mode, report_error itself exits immediately on the first
+// violation, so this per-file marking only matters in non-strict mode.)
+// Every violation found is still reported, not just the first.
+// Returns 0 if no violations were found, -1 if at least one was reported.
+int flag_conflict_check(FileConfig fileconfs[], int num_fileconfs,
+                         ErrorLog *log, const AppConfig *config) {
+    int had_error = 0;
+
+    for (int i = 0; i < num_fileconfs; i++) {
+        FileConfig *fc = &fileconfs[i];
+
+        for (int s = 0; s < fc->seek_count; s++) {
+            if (fc->seek[s] < 1) {
+                report_error(log, config, ERR_INVALID_SEEK_VALUE, -1, fc->path);
+                fc->invalid = true;
+                had_error = 1;
+            }
+
+            for (int t = s + 1; t < fc->seek_count; t++) {
+                if (fc->seek[t] == fc->seek[s]) {
+                    report_error(log, config, ERR_DUPLICATE_SEEK, -1, fc->path);
+                    fc->invalid = true;
+                    had_error = 1;
+                }
+            }
+        }
+    }
+
+    return had_error ? -1 : 0;
 }
