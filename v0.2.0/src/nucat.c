@@ -12,7 +12,12 @@
 // Author: Aidan A. Bradley
 //
 // usage:
-//      >> ./nucat [-h] [-v] [-n [targets]] [-s <lines> [targets]] PATH...
+//      >> ./nucat [-h] [-v] [-strict|-x] [-n [targets]] [-s <lines> [targets]] PATH...
+//
+// Style note: AppConfig-wide flags (-h, -v, -strict/-x) don't need any
+// particular order to function correctly, but favor writing them before
+// the per-file flags (-n, -s) in a command line — it reads more clearly
+// as "tool-wide settings, then per-file settings."
 //
 // Changelog:
 //      v0.0.1 - v0.0.5  See prior versions.
@@ -36,7 +41,67 @@ int main(int argc, char *argv[]) {
     }
 
     if (config.help_requested) {
-        printf("Usage: nucat [-h] [-v] [-n [targets]] [-s <lines> [targets]] PATH...\n");
+        printf(
+            "nucat v0.2.0 — a targeted file-reading tool, not a cat replacement\n"
+            "\n"
+            "USAGE:\n"
+            "  nucat [flags] PATH [PATH...]\n"
+            "\n"
+            "  Flags must come before all file paths. Nothing after the first\n"
+            "  file path is treated as a flag, even if it starts with '-'.\n"
+            "\n"
+            "FLAGS:\n"
+            "  -h, --help      Show this help message and exit.\n"
+            "  -v, --verbose   Print extra diagnostic info before running.\n"
+            "  -strict, -x     Exit immediately on the first error of any kind,\n"
+            "                  instead of collecting errors and continuing.\n"
+            "  -n [targets]    Prefix output lines with their line number.\n"
+            "                  With no bracket, applies to every file.\n"
+            "  -s <lines> [targets]\n"
+            "                  Show only the given line number(s), instead of\n"
+            "                  the whole file. With no bracket, applies to\n"
+            "                  every file (same as -n's default behavior).\n"
+            "\n"
+            "TARGETING FILES WITH [brackets]:\n"
+            "  Files are numbered by their position on the command line,\n"
+            "  starting at 1. A bracket after a flag limits that flag to\n"
+            "  specific files: [1], [2,3], etc.\n"
+            "\n"
+            "  -s accepts either multiple lines for ONE file, or one line for\n"
+            "  MULTIPLE files — never both at once:\n"
+            "    -s 13,40 [1]      OK   (two lines, one file)\n"
+            "    -s 13 [1,2]       OK   (one line, two files)\n"
+            "    -s 13,40 [1,2]    ERROR (ambiguous — pick one form)\n"
+            "\n"
+            "  This still applies with NO bracket at all: 'no bracket' means\n"
+            "  'every file', so multiple -s values with more than one file\n"
+            "  on the command line is the same ambiguity. Add a bracket to\n"
+            "  disambiguate in that case.\n"
+            "\n"
+            "EXAMPLES:\n"
+            "  nucat file.txt\n"
+            "      Plain output, same as cat.\n"
+            "\n"
+            "  nucat -n file.txt\n"
+            "      Every line prefixed with its line number.\n"
+            "\n"
+            "  nucat -s 42 [1] file.txt\n"
+            "      Print only line 42.\n"
+            "\n"
+            "  nucat -n -s 572 file.txt\n"
+            "      No bracket needed with a single file — -s applies\n"
+            "      globally here, same as -n's default behavior.\n"
+            "\n"
+            "  nucat -n -s 42 [1] file.txt\n"
+            "      Print only line 42, with its real line number prefixed.\n"
+            "\n"
+            "  nucat -n [1] -s 10 [2] file1.txt file2.txt\n"
+            "      file1.txt fully numbered; file2.txt shows only line 10.\n"
+            "\n"
+            "  nucat -strict -s 5,5 [1] file.txt\n"
+            "      Duplicate seek value — exits immediately with an error\n"
+            "      instead of skipping the file and continuing.\n"
+        );
         return 0;
     }
 

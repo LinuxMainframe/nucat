@@ -132,17 +132,21 @@ int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
             consumed = 0;
         }
     } else {
-        // Value-flag: mandatory value, then mandatory bracket.
+        // Value-flag: mandatory value, then an OPTIONAL bracket. With no
+        // bracket, the value applies to every file — same "absent bracket
+        // = global" rule as toggles, just shifted by one token since the
+        // value itself is never optional.
         if (flag_index + 1 >= boundary_index) {
             return -1; // nothing follows the flag at all
         }
         if (argv[flag_index + 1][0] == '[') {
             return -1; // bracket found where the value should be
         }
-        if (flag_index + 2 >= boundary_index || argv[flag_index + 2][0] != '[') {
-            return -1; // value found, but no mandatory bracket after it
+        if (flag_index + 2 < boundary_index && argv[flag_index + 2][0] == '[') {
+            consumed = 2; // value + bracket
+        } else {
+            consumed = 1; // value only, applies globally
         }
-        consumed = 2;
     }
 
     // For non-terminal flags, anything left over between what was consumed
@@ -180,10 +184,9 @@ int flag_validate(char *argv[], int flag_index, int boundary_index,
                        || flag->id == FLAG_STRICT);
 
     // Was a bracket actually present in this occurrence? For toggles,
-    // consumed==1 means "bracket found". Value-flags always require a
-    // bracket to succeed at all (validate_flag_shape enforces that), so
-    // reaching here with a value-flag means a bracket is guaranteed present.
-    bool bracket_present = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : true;
+    // consumed==1 means "bracket found" (0 = bare). For value-flags,
+    // consumed==2 means "bracket found" (1 = value only, no bracket).
+    bool bracket_present = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : (consumed == 2);
 
     if (tool_wide && bracket_present) {
         return -2; // e.g. "-v [1,2]" — a global flag can't target files
@@ -387,7 +390,7 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
         // files legitimately follow, so enforce_exact_boundary is false.
         int consumed = validate_flag_shape(argv, last_flag, argc, terminal, false);
         if (consumed == -1) {
-            report_error(log, config, ERR_MISSING_BRACKET, last_flag, argv[last_flag]);
+            report_error(log, config, ERR_MISSING_VALUE, last_flag, argv[last_flag]);
             return -1;
         }
 
@@ -445,7 +448,7 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
             continue;
         }
         if (flag_rc == -1) {
-            report_error(log, config, ERR_MISSING_BRACKET, flag_index, argv[flag_index]);
+            report_error(log, config, ERR_MISSING_VALUE, flag_index, argv[flag_index]);
             continue;
         }
 
@@ -467,7 +470,7 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
 
         // From here on, this is a per-file flag (FLAG_LINE_NUMBERS or
         // FLAG_LINE_SEEK) — figure out which files it targets.
-        bool has_bracket = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : true;
+        bool has_bracket = (flag->type == TYPE_TOGGLE) ? (consumed == 1) : (consumed == 2);
 
         int targetlist[MAX_TOKEN_LEN];
         int target_count;
@@ -482,7 +485,8 @@ int argument_parse(int argc, char *argv[], AppConfig *config,
                 continue;
             }
         } else {
-            // No bracket on a toggle — applies to every file.
+            // No bracket present — applies to every file (true for a bare
+            // toggle, and now also for a value-flag with no bracket).
             target_count = num_files;
             for (int i = 0; i < num_files; i++) {
                 targetlist[i] = i + 1;
