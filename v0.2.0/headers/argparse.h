@@ -53,6 +53,7 @@ typedef struct {
     int  seek[MAX_SEEKS];
     int  seek_count;
     int  file_no;          // 1-indexed position among the files, per bracket refs
+    const char *path;      // alias into argv — argv strings outlive main(), so no copy needed
 } FileConfig;
 
 // - ERROR HANDLING - //
@@ -84,10 +85,36 @@ const FlagDefinition* find_flag(const char *arg);
 
 int find_commas(const char *token, int commalist[]);
 
-int find_span(char *argv[], int argc, int spanlist[], int *entries);
+int find_flag_positions(char *argv[], int argc, int positionlist[], int *entries);
 
 int validate_flag_shape(char *argv[], int flag_index, int boundary_index,
-                         const FlagDefinition *flag);
+                         const FlagDefinition *flag, bool enforce_exact_boundary);
+
+// Wraps validate_flag_shape with a semantic check: tool-wide flags
+// (FLAG_HELP, FLAG_VERBOSE) cannot carry a bracket, since they don't
+// target files. Writes the token-count consumed into *consumed_out on
+// success. Returns 0 on success, -1 on any failure (shape or semantic).
+int flag_validate(char *argv[], int flag_index, int boundary_index,
+                   const FlagDefinition *flag, bool enforce_exact_boundary,
+                   int *consumed_out);
+
+// Parses a comma-separated list of integers from `token`, which may
+// optionally be wrapped in brackets (e.g. "[2,3]" or bare "13,40" both
+// work — brackets are stripped if present). Uses find_commas internally.
+// Caller must size `list[]` to at least the number of values that could
+// plausibly appear (e.g. strlen(token) is always a safe upper bound).
+// Returns the count of integers parsed, or -1 on malformed input
+// (non-numeric segment, empty segment, or token too long).
+int parse_brackets(const char *token, int list[]);
+
+// Applies one flag's effect to a single target file (by file_no, 1-indexed).
+// Branches on flag->id: FLAG_LINE_NUMBERS sets the bool; FLAG_LINE_SEEK
+// appends `values` into that file's seek[] array (bounds-checked against
+// MAX_SEEKS). Called once per target file from Step 3's loop, not once
+// per flag occurrence. Returns 0 on success, -1 on failure (unknown
+// flag->id for this purpose, or seek[] capacity exceeded).
+int fileconf_mutate(FileConfig fileconfs[], int file_no, const FlagDefinition *flag,
+                     const int values[], int value_count);
 
 void report_error(ErrorLog *log, const AppConfig *config,
                    ErrorType type, int argv_index, const char *token);
